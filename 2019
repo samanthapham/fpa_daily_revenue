@@ -1,0 +1,74 @@
+WITH 
+raw_visitor AS (
+      SELECT visit_date
+      ,visitor_pk
+      FROM a.customer_visits vis
+      WHERE
+       CASE
+          WHEN vis.visit_date BETWEEN '2019-02-22' AND '2019-02-25' AND vis.first_customer_page_type IN ('nearme page', 'landing page') THEN TRUE
+          ELSE vis.category_group <> 'unknown' --Standard condition (only count visits to a category), other lines account for various visitor bugs
+        END
+        AND NOT (vis.visit_date = '2018-01-19' AND vis.first_customer_page_type = 'service page' AND vis.first_url_type IN ('/:state/:city/:keyword/:service', '/:ignored/service/:raw_service_id') AND vis.first_referer IS NULL AND vis.visit_length_secs = 0)
+        AND NOT (vis.visit_date IN ('2019-01-21', '2019-01-22') AND vis.first_customer_page_type = 'landing page' AND vis.first_url_type = '/:state/:city/:keyword' AND vis.visit_length_secs = 0)
+)
+
+, visitor AS (
+SELECT visit_date AS visit_date,
+COUNT(DISTINCT visitor_pk) AS num_vis
+FROM raw_visitor
+GROUP BY 1
+ORDER BY 1
+)
+,
+contact AS (
+    SELECT
+        con.customer_id,
+        con.bid_id,
+        DATETIME(con.first_customer_contact_time, 'America/Los_Angeles') as contact_time,
+        DATETIME(con.request_create_time,'America/Los_Angeles') as request_time,
+        con.accepted AS accepted
+    FROM a.contacts con 
+    JOIN a.requests req ON con.request_id = req.request_id
+    WHERE con.intentful
+    AND NOT req.is_admin_deleted
+    AND NOT req.is_dupe
+    AND NOT req.is_spam
+    AND req.ghosted_time IS NULL
+    )
+,
+ccc AS (
+    SELECT DATE(request_time) AS req_day,
+    COUNT (Distinct customer_id) AS num_customers,
+    COUNT (*) AS num_contacts,
+    COUNTIF (accepted) AS num_accpt_contacts
+FROM contact 
+--WHERE contact_time <= DATETIME_ADD(request_time, INTERVAL 3 DAY) --Timeboxes contacts to 3 days
+GROUP BY 1
+)
+, revenue AS ( 
+    SELECT day_pst,
+    net_revenue_overall
+    FROM b.daily_revenue_finance
+  )
+  
+SELECT 
+    visitor.visit_date,
+    sum(IFNULL(num_vis,0)) as visitor,
+    sum(IFNULL(num_customers,0)) as customer,
+    sum(ifnull(num_contacts,0)) as contact,
+    sum(IFNULL(num_accpt_contacts,0)) as accpt_contact,
+    sum(IFNULL(net_revenue_overall,0)) as revenue
+FROM visitor
+JOIN ccc on visitor.visit_date = ccc.req_day
+JOIN revenue on visitor.visit_date = revenue.day_pst 
+WHERE visitor.visit_date >= '{{start_date}}'
+GROUP BY 1
+ORDER BY 1
+
+{% form %}
+
+start_date:
+ type: date
+ default: 2019-12-01
+ 
+{% endform %}
